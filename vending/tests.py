@@ -9,6 +9,8 @@ from meters.models import Meter
 from transactions.models import Transaction
 from .models import VendingPurchase
 
+from .services import initiate_simulated_payment
+
 
 class SimulatedPaymentAPITests(APITestCase):
 
@@ -177,4 +179,90 @@ class SimulatedPaymentAPITests(APITestCase):
         )
 
         self.assertEqual(response.status_code, 400)
+        self.assertEqual(Transaction.objects.count(), 0)
+
+
+class SimulatedPaymentInitiationTests(APITestCase):
+
+    def setUp(self):
+        self.customer = Customer.objects.create(
+            full_name="Initiation Test Customer",
+            email="initiation@example.com",
+            phone_number="0710000001",
+            address="Test Address",
+        )
+
+        self.meter = Meter.objects.create(
+            customer=self.customer,
+            meter_number="INIT-METER-001",
+            meter_type=Meter.MeterType.PREPAID,
+            status=Meter.Status.ACTIVE,
+        )
+
+        self.purchase = VendingPurchase.objects.create(
+            meter=self.meter,
+            amount=Decimal("300.00"),
+        )
+
+    def test_initiation_creates_pending_transaction(self):
+        purchase, payment, created = initiate_simulated_payment(
+            purchase_id=self.purchase.id,
+            idempotency_key="init-payment-001",
+        )
+
+        self.assertTrue(created)
+        self.assertEqual(payment.status, Transaction.Status.PENDING)
+        self.assertEqual(
+            purchase.status,
+            VendingPurchase.Status.PENDING,
+        )
+        self.assertEqual(payment.amount, Decimal("300.00"))
+        self.assertEqual(Transaction.objects.count(), 1)
+
+    def test_duplicate_initiation_returns_existing_transaction(self):
+        first_purchase, first_payment, first_created = (
+            initiate_simulated_payment(
+                purchase_id=self.purchase.id,
+                idempotency_key="init-payment-duplicate-001",
+            )
+        )
+
+        second_purchase, second_payment, second_created = (
+            initiate_simulated_payment(
+                purchase_id=self.purchase.id,
+                idempotency_key="init-payment-duplicate-001",
+            )
+        )
+
+        self.assertTrue(first_created)
+        self.assertFalse(second_created)
+        self.assertEqual(first_payment.id, second_payment.id)
+        self.assertEqual(Transaction.objects.count(), 1)
+
+    def test_idempotency_key_cannot_be_reused_for_another_purchase(self):
+        another_purchase = VendingPurchase.objects.create(
+            meter=self.meter,
+            amount=Decimal("150.00"),
+        )
+
+        initiate_simulated_payment(
+            purchase_id=self.purchase.id,
+            idempotency_key="init-payment-shared-001",
+        )
+
+        with self.assertRaises(Exception):
+            initiate_simulated_payment(
+                purchase_id=another_purchase.id,
+                idempotency_key="init-payment-shared-001",
+            )
+
+        self.assertEqual(Transaction.objects.count(), 1)
+
+    def test_missing_idempotency_key_is_rejected(self):
+        with self.assertRaises(Exception):
+            initiate_simulated_payment(
+                purchase_id=self.purchase.id,
+                idempotency_key=None,
+            )
+
         self.assertEqual(Transaction.objects.count(), 0)
