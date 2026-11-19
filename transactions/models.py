@@ -19,6 +19,13 @@ class Transaction(models.Model):
         editable=False
     )
 
+    idempotency_key = models.CharField(
+    max_length=128,
+    unique=True,
+    null=True,
+    blank=True,
+    )
+
     purchase = models.ForeignKey(
         "vending.VendingPurchase",
         on_delete=models.PROTECT,
